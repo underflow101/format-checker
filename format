@@ -12,7 +12,7 @@ CHECK_STAGED_ONLY="0"
 function Usage()
 {
   echo "Usage: $0 $(basename ${BASH_SOURCE[0]}) [OPTIONS] [<file|dir> ...]"
-  echo "If no arguments are specified, it formats all nnas codes"
+  echo "If no arguments are specified, it formats all lp codes"
   echo "If <file>s are given, it reformats the files"
   echo ""
   echo "Options:"
@@ -109,7 +109,7 @@ function check_permission() {
   FILES_TO_CHECK_PERMISSION=()
   for f in ${FILES_TO_CHECK[@]}; do
     # Manually ignore permission checking
-    if [[ ${f} == !(nnas|nnfw|nncc|*.sh|*.py|*/gradlew) ]] || [[ ${f} == tests/nnapi/specs/**/*.py ]]; then
+    if [[ ${f} == !(lp|*.sh|*.py|*/gradlew) ]] ; then
       FILES_TO_CHECK_PERMISSION+=("${f}")
     fi
   done
@@ -151,13 +151,8 @@ function check_cpp_files() {
   # Check c++ files
   FILES_TO_CHECK_CPP=()
   for f in ${FILES_TO_CHECK[@]}; do
-    # Manually ignore style checking
-    if [[ ${f} == +(*/NeuralNetworks.h|*/NeuralNetworksExtensions.h) ]]; then
-      continue
-    fi
-
     # File extension to check
-    if [[ ${f} == +(*.h|*.hpp|*.cpp|*.cc|*.c|*.cl) ]]; then
+    if [[ ${f} == +(*.h|*.hpp|*.cpp|*.cc|*.c|*.cl|*.ino) ]]; then
       FILES_TO_CHECK_CPP+=("${f}")
     fi
   done
@@ -210,7 +205,7 @@ function check_python_files() {
   fi
 }
 
-pushd ${NNAS_PROJECT_PATH}
+pushd ${LP_PROJECT_PATH}
 
 if [[ -n "$(git diff)" ]] && { [[ "${CHECK_DIFF_ONLY}" != "1" ]] || [[ "${CHECK_STAGED_ONLY}" != "1" ]]; }; then
   echo "[WARNING] Commit all the changes before running format check"

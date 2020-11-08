@@ -24,11 +24,10 @@ def replacements_from_file(file, style="file"):
                                               cwd=os.path.dirname(file))
     replacement_xml_root = ET.XML(replacement_xml)
     for replacement_item in replacement_xml_root.findall('replacement'):
-        replacements.append(Replacement(
-            offset=int(replacement_item.attrib["offset"]),
-            length=int(replacement_item.attrib["length"]),
-            text=replacement_item.text
-        ))
+        replacements.append(
+            Replacement(offset=int(replacement_item.attrib["offset"]),
+                        length=int(replacement_item.attrib["length"]),
+                        text=replacement_item.text))
 
     return replacements
 
@@ -43,16 +42,16 @@ def errors_from_replacements(file, replacements=[]):
         lines.append(lines[-1] + len(line))
 
     for line_index, line_offset in enumerate(lines[:-1]):
-        while (len(replacements) > 0 and
-               lines[line_index + 1] > replacements[0].offset):
+        while (len(replacements) > 0
+               and lines[line_index + 1] > replacements[0].offset):
             replacement = replacements.pop(0)
-            errors.append(Error(
-                line=line_index,
-                column=replacement.offset - line_offset,
-                found=file_content[replacement.offset:replacement.offset +
-                                   replacement.length],
-                expected=replacement.text if replacement.text else ""
-            ))
+            errors.append(
+                Error(
+                    line=line_index,
+                    column=replacement.offset - line_offset,
+                    found=file_content[replacement.offset:replacement.offset +
+                                       replacement.length],
+                    expected=replacement.text if replacement.text else ""))
 
         if len(replacements) == 0:
             break
@@ -103,7 +102,8 @@ def main():
         description="C/C++ formatting check using clang-format")
 
     # Style
-    parser.add_argument("-s", "--style",
+    parser.add_argument("-s",
+                        "--style",
                         default="file",
                         help="Coding style, pass-through to clang-format's "
                         "-style=<string>, (default is '%(default)s').")
@@ -115,7 +115,9 @@ def main():
                         "exit status) if clang-format is not available.")
 
     # Files or directory to check
-    parser.add_argument("file", nargs="+", help="Paths to the files that'll "
+    parser.add_argument("file",
+                        nargs="+",
+                        help="Paths to the files that'll "
                         "be checked (wilcards accepted).")
     args = parser.parse_args()
 
@@ -126,7 +128,8 @@ def main():
 
         # Checking that clang-format is available
         if not check_clang_format_exec():
-            print("Can't run 'clang-format', please make sure it is installed ")
+            print(
+                "Can't run 'clang-format', please make sure it is installed ")
             "and reachable in your PATH."
             if args.success_on_missing_clang_format:
                 exit(0)
@@ -149,10 +152,11 @@ def main():
     except Exception(e):
         print("Exception raised:")
         print("    " + str(e))
-        print('-'*60)
+        print('-' * 60)
         traceback.print_exc()
-        print('-'*60)
+        print('-' * 60)
         exit(-2)
+
 
 if __name__ == "__main__":
     main()
