@@ -1,394 +1,701 @@
-diff --git a/format b/format
-deleted file mode 100644
-index 779958e..0000000
---- a/format
-+++ /dev/null
-@@ -1,277 +0,0 @@
--#!/bin/bash
--
--INVALID_EXIT=0
--FILES_TO_CHECK=()
--DIRECTORIES_TO_BE_TESTED=()
--DIRECTORIES_NOT_TO_BE_TESTED=()
--CLANG_FORMAT_CANDIDATES=()
--PATCH_FILE=format.patch
--CHECK_DIFF_ONLY="0"
--CHECK_STAGED_ONLY="0"
--
--function Usage()
--{
--  echo "Usage: $0 $(basename ${BASH_SOURCE[0]}) [OPTIONS] [<file|dir> ...]"
--  echo "If no arguments are specified, it formats all lp codes"
--  echo "If <file>s are given, it reformats the files"
--  echo ""
--  echo "Options:"
--  echo "      --clang-format <TOOL>     clang format bin (default: clang-format-3.9, clang-format)"
--  echo "      --diff-only               check diff files with master"
--  echo "      --staged-only             check git staged files"
--}
--
--while [[ $# -gt 0 ]]
--do
--  arg="$1"
--  case $arg in
--    -h|--help|help)
--      Usage
--      exit 0
--      ;;
--    --clang-format)
--      CLANG_FORMAT_CANDIDATES=($2)
--      shift 2
--      ;;
--    --clang-format=*)
--      CLANG_FORMAT_CANDIDATES=(${1#*=})
--      shift
--      ;;
--    --staged-only)
--      CHECK_STAGED_ONLY="1"
--      CHECK_DIFF_ONLY="1"
--      shift
--      ;;
--    --diff-only)
--      CHECK_DIFF_ONLY="1"
--      shift
--      ;;
--    *)
--      DIRECTORIES_TO_BE_TESTED+=($1)
--      shift
--      ;;
--  esac
--done
--
--function pushd () {
--  command pushd "$@" > /dev/null
--}
--
--function popd () {
--  command popd "$@" > /dev/null
--}
--
--function command_exists() {
--  command -v $1 > /dev/null 2>&1
--}
--
--function exclude_symbolic_links() {
--  # Check all files (CMakeLists.txt, *.cl, ... not only for C++, Python)
--  if [[ ${#FILES_TO_CHECK} -ne 0 ]]; then
--    FILES_EXCLUDE_SYMLINKS=$(file ${FILES_TO_CHECK} | grep -v "symbolic link" | cut -d':' -f1)
--    FILES_TO_CHECK=${FILES_EXCLUDE_SYMLINKS}
--  fi
--}
--
--function check_newline() {
--  FILES_TO_CHECK_CR=()
--  for f in ${FILES_TO_CHECK[@]}; do
--    # Manually ignore style checking
--    if [[ ${f} == !(*.svg|*.pdf|*.png) ]]; then
--      FILES_TO_CHECK_CR+=("${f}")
--    fi
--  done
--
--  # Check all files (CMakeLists.txt, *.cl, ... not only for C++, Python)
--  if [[ ${#FILES_TO_CHECK_CR} -ne 0 ]]; then
--    CRCHECK=$(file ${FILES_TO_CHECK_CR} | grep 'with CR')
--  else
--    return
--  fi
--  FILES_TO_FIX=($(echo "$CRCHECK" | grep "with CRLF line" | cut -d':' -f1))
--  for f in ${FILES_TO_FIX[@]}; do
--    tr -d '\r' < $f > $f.fixed && cat $f.fixed > $f && rm $f.fixed
--  done
--  FILES_TO_FIX=($(echo "${CRCHECK}" | grep "with CR line" | cut -d':' -f1))
--  for f in ${FILES_TO_FIX[@]}; do
--    tr '\r' '\n' < $f > $f.fixed && cat $f.fixed > $f && rm $f.fixed
--  done
--  # Check no new line at end of file
--  for f in ${FILES_TO_CHECK_CR[@]}; do
--    if diff /dev/null "$f" | tail -1 | grep '^\\ No newline' > /dev/null; then
--      echo >> "$f"
--    fi
--  done
--}
--
--function check_permission() {
--  # Check all files except script
--  FILES_TO_CHECK_PERMISSION=()
--  for f in ${FILES_TO_CHECK[@]}; do
--    # Manually ignore permission checking
--    if [[ ${f} == !(lp|*.sh|*.py|*/gradlew) ]] ; then
--      FILES_TO_CHECK_PERMISSION+=("${f}")
--    fi
--  done
--
--  if [[ ${#FILES_TO_CHECK_PERMISSION} -eq 0 ]]; then
--    return
--  fi
--  for FILE_TO_CHECK in ${FILES_TO_CHECK_PERMISSION[@]}; do
--    RESULT=$(stat -c '%A' ${FILE_TO_CHECK} | grep 'x')
--    if [ "${RESULT}" != "" ]; then
--      chmod a-x ${FILE_TO_CHECK}
--    fi
--  done
--}
--
--function check_cpp_files() {
--  if [[ ${__Check_CPP} -eq 0 ]]; then
--    echo "[SKIPPED] C/C++ check is skipped"
--    return
--  fi
--
--  CLANG_FORMAT_CANDIDATES+=("clang-format-3.9")
--  CLANG_FORMAT_CANDIDATES+=("clang-format")
--
--  for CLANG_FORMAT_CANDIDATE in ${CLANG_FORMAT_CANDIDATES[@]}; do
--    if command_exists ${CLANG_FORMAT_CANDIDATE} ; then
--      CLANG_FORMAT="${CLANG_FORMAT_CANDIDATE}"
--      break
--    fi
--  done
--
--  if [[ -z ${CLANG_FORMAT}  ]]; then
--    echo "[ERROR] clang-format is unavailable"
--    echo
--    echo "Please install clang-format before running format check"
--    exit 1
--  fi
--
--  # Check c++ files
--  FILES_TO_CHECK_CPP=()
--  for f in ${FILES_TO_CHECK[@]}; do
--    # File extension to check
--    if [[ ${f} == +(*.h|*.hpp|*.cpp|*.cc|*.c|*.cl|*.ino) ]]; then
--      FILES_TO_CHECK_CPP+=("${f}")
--    fi
--  done
--
--  # Skip by '.FORMATDENY' file
--  for s in ${DIRECTORIES_NOT_TO_BE_TESTED[@]}; do
--    FILES_TO_CHECK_CPP=(${FILES_TO_CHECK_CPP[*]/$s*/})
--  done
--
--  if [[ ${#FILES_TO_CHECK_CPP} -ne 0 ]]; then
--    ${CLANG_FORMAT} -i ${FILES_TO_CHECK_CPP[@]}
--    EXIT_CODE=$?
--    if [[ ${EXIT_CODE} -ne 0 ]]; then
--      INVALID_EXIT=${EXIT_CODE}
--    fi
--  fi
--}
--
--function check_python_files() {
--  if [[ ${__Check_PYTHON} -eq 0 ]]; then
--    echo "[SKIPPED] Python check is skipped"
--    return
--  fi
--
--  if ! command_exists yapf; then
--    echo "[ERROR] yapf is unavailable"
--    echo "       Please install yapf."
--    exit 1
--  fi
--
--  # Check python files
--  FILES_TO_CHECK_PYTHON=()
--  for f in ${FILES_TO_CHECK[@]}; do
--    # File extension to check
--    if [[ ${f} == *.py ]]; then
--      FILES_TO_CHECK_PYTHON+=("${f}")
--    fi
--  done
--  for s in ${DIRECTORIES_NOT_TO_BE_TESTED[@]}; do
--    skip=${s#'.'/}/
--    FILES_TO_CHECK_PYTHON=(${FILES_TO_CHECK_PYTHON[*]/$skip*/})
--  done
--
--  if [[ ${#FILES_TO_CHECK_PYTHON} -ne 0 ]]; then
--    yapf -i ${FILES_TO_CHECK_PYTHON[@]}
--    EXIT_CODE=$?
--    if [[ ${EXIT_CODE} -ne 0 ]]; then
--      INVALID_EXIT=${EXIT_CODE}
--    fi
--  fi
--}
--
--pushd ${LP_PROJECT_PATH}
--
--if [[ -n "$(git diff)" ]] && { [[ "${CHECK_DIFF_ONLY}" != "1" ]] || [[ "${CHECK_STAGED_ONLY}" != "1" ]]; }; then
--  echo "[WARNING] Commit all the changes before running format check"
--  echo "          ${PATCH_FILE} file will contain unstaged files"
--fi
--
--__Check_CPP=${CHECK_CPP:-"1"}
--__Check_PYTHON=${CHECK_PYTHON:-"1"}
--
--FILES_TO_CHECK=$(git ls-files -c --exclude-standard ${DIRECTORIES_TO_BE_TESTED[@]})
--if [[ "${CHECK_DIFF_ONLY}" = "1" ]]; then
--  MASTER_EXIST=$(git rev-parse --verify master)
--  CURRENT_BRANCH=$(git branch | grep \* | cut -d ' ' -f2-)
--  DIFF_COMMITS=`git log --graph --oneline master..HEAD | wc -l`
--  if [[ -z "${MASTER_EXIST}" ]]; then
--    echo "Cannot found local master branch"
--  elif [[ "${CURRENT_BRANCH}" = "master" ]]; then
--    echo "Current branch is master"
--  else
--    if [[ "${CHECK_STAGED_ONLY}" = "1" ]]; then
--      FILES_TO_CHECK=$(git diff --staged --name-only --diff-filter=d)
--    else
--      FILES_TO_CHECK=$(git diff --name-only --diff-filter=d HEAD~${DIFF_COMMITS})
--    fi
--  fi
--fi
--
--for DIR_NOT_TO_BE_TESTED in $(git ls-files -co --exclude-standard '*/.FORMATDENY'); do
--  DIRECTORIES_NOT_TO_BE_TESTED+=($(dirname "${DIR_NOT_TO_BE_TESTED}"))
--done
--
--exclude_symbolic_links
--check_newline
--check_permission
--check_cpp_files
--check_python_files
--
--if [[ "${CHECK_DIFF_ONLY}" = "1" ]] && [[ "${CHECK_STAGED_ONLY}" = "1" ]]; then
--  if [[ ! -z "${FILES_TO_CHECK}" ]]; then
--    DIFF=$(git diff ${FILES_TO_CHECK} | tee ${PATCH_FILE})
--  fi
--else
--  DIFF=$(git diff | tee ${PATCH_FILE})
--fi
--
--popd
--
--if [[ -z "${CRCHECK}" ]] && [[ ! -n "${DIFF}" ]] && [[ ${INVALID_EXIT} -eq 0 ]]; then
--  echo "[PASSED] Format checker succeed."
--  return
--fi
--
--# Something went wrong
--
--if [[ ! -z "${CRCHECK}" ]]; then
--  echo "[FAILED] Please use LF for newline for following files."
--  echo "${CRCHECK}"
--fi
--
--if [[ -s ${PATCH_FILE} ]]; then
--  echo "[FAILED] Format checker failed and update code to follow convention."
--  echo "         You can find changes in ${PATCH_FILE}"
--fi
--
--if [[ ${INVALID_EXIT} -ne 0 ]]; then
--  echo "[[FAILED] Invalid format checker exit."
--fi
--
--exit 1
 diff --git a/format.patch b/format.patch
-index 65af8f8..e69de29 100644
+index feaafb5..e69de29 100644
 --- a/format.patch
 +++ b/format.patch
-@@ -1,227 +0,0 @@
+@@ -1,831 +0,0 @@
+-diff --git a/format b/format
+-deleted file mode 100644
+-index 779958e..0000000
+---- a/format
+-+++ /dev/null
+-@@ -1,277 +0,0 @@
+--#!/bin/bash
+--
+--INVALID_EXIT=0
+--FILES_TO_CHECK=()
+--DIRECTORIES_TO_BE_TESTED=()
+--DIRECTORIES_NOT_TO_BE_TESTED=()
+--CLANG_FORMAT_CANDIDATES=()
+--PATCH_FILE=format.patch
+--CHECK_DIFF_ONLY="0"
+--CHECK_STAGED_ONLY="0"
+--
+--function Usage()
+--{
+--  echo "Usage: $0 $(basename ${BASH_SOURCE[0]}) [OPTIONS] [<file|dir> ...]"
+--  echo "If no arguments are specified, it formats all lp codes"
+--  echo "If <file>s are given, it reformats the files"
+--  echo ""
+--  echo "Options:"
+--  echo "      --clang-format <TOOL>     clang format bin (default: clang-format-3.9, clang-format)"
+--  echo "      --diff-only               check diff files with master"
+--  echo "      --staged-only             check git staged files"
+--}
+--
+--while [[ $# -gt 0 ]]
+--do
+--  arg="$1"
+--  case $arg in
+--    -h|--help|help)
+--      Usage
+--      exit 0
+--      ;;
+--    --clang-format)
+--      CLANG_FORMAT_CANDIDATES=($2)
+--      shift 2
+--      ;;
+--    --clang-format=*)
+--      CLANG_FORMAT_CANDIDATES=(${1#*=})
+--      shift
+--      ;;
+--    --staged-only)
+--      CHECK_STAGED_ONLY="1"
+--      CHECK_DIFF_ONLY="1"
+--      shift
+--      ;;
+--    --diff-only)
+--      CHECK_DIFF_ONLY="1"
+--      shift
+--      ;;
+--    *)
+--      DIRECTORIES_TO_BE_TESTED+=($1)
+--      shift
+--      ;;
+--  esac
+--done
+--
+--function pushd () {
+--  command pushd "$@" > /dev/null
+--}
+--
+--function popd () {
+--  command popd "$@" > /dev/null
+--}
+--
+--function command_exists() {
+--  command -v $1 > /dev/null 2>&1
+--}
+--
+--function exclude_symbolic_links() {
+--  # Check all files (CMakeLists.txt, *.cl, ... not only for C++, Python)
+--  if [[ ${#FILES_TO_CHECK} -ne 0 ]]; then
+--    FILES_EXCLUDE_SYMLINKS=$(file ${FILES_TO_CHECK} | grep -v "symbolic link" | cut -d':' -f1)
+--    FILES_TO_CHECK=${FILES_EXCLUDE_SYMLINKS}
+--  fi
+--}
+--
+--function check_newline() {
+--  FILES_TO_CHECK_CR=()
+--  for f in ${FILES_TO_CHECK[@]}; do
+--    # Manually ignore style checking
+--    if [[ ${f} == !(*.svg|*.pdf|*.png) ]]; then
+--      FILES_TO_CHECK_CR+=("${f}")
+--    fi
+--  done
+--
+--  # Check all files (CMakeLists.txt, *.cl, ... not only for C++, Python)
+--  if [[ ${#FILES_TO_CHECK_CR} -ne 0 ]]; then
+--    CRCHECK=$(file ${FILES_TO_CHECK_CR} | grep 'with CR')
+--  else
+--    return
+--  fi
+--  FILES_TO_FIX=($(echo "$CRCHECK" | grep "with CRLF line" | cut -d':' -f1))
+--  for f in ${FILES_TO_FIX[@]}; do
+--    tr -d '\r' < $f > $f.fixed && cat $f.fixed > $f && rm $f.fixed
+--  done
+--  FILES_TO_FIX=($(echo "${CRCHECK}" | grep "with CR line" | cut -d':' -f1))
+--  for f in ${FILES_TO_FIX[@]}; do
+--    tr '\r' '\n' < $f > $f.fixed && cat $f.fixed > $f && rm $f.fixed
+--  done
+--  # Check no new line at end of file
+--  for f in ${FILES_TO_CHECK_CR[@]}; do
+--    if diff /dev/null "$f" | tail -1 | grep '^\\ No newline' > /dev/null; then
+--      echo >> "$f"
+--    fi
+--  done
+--}
+--
+--function check_permission() {
+--  # Check all files except script
+--  FILES_TO_CHECK_PERMISSION=()
+--  for f in ${FILES_TO_CHECK[@]}; do
+--    # Manually ignore permission checking
+--    if [[ ${f} == !(lp|*.sh|*.py|*/gradlew) ]] ; then
+--      FILES_TO_CHECK_PERMISSION+=("${f}")
+--    fi
+--  done
+--
+--  if [[ ${#FILES_TO_CHECK_PERMISSION} -eq 0 ]]; then
+--    return
+--  fi
+--  for FILE_TO_CHECK in ${FILES_TO_CHECK_PERMISSION[@]}; do
+--    RESULT=$(stat -c '%A' ${FILE_TO_CHECK} | grep 'x')
+--    if [ "${RESULT}" != "" ]; then
+--      chmod a-x ${FILE_TO_CHECK}
+--    fi
+--  done
+--}
+--
+--function check_cpp_files() {
+--  if [[ ${__Check_CPP} -eq 0 ]]; then
+--    echo "[SKIPPED] C/C++ check is skipped"
+--    return
+--  fi
+--
+--  CLANG_FORMAT_CANDIDATES+=("clang-format-3.9")
+--  CLANG_FORMAT_CANDIDATES+=("clang-format")
+--
+--  for CLANG_FORMAT_CANDIDATE in ${CLANG_FORMAT_CANDIDATES[@]}; do
+--    if command_exists ${CLANG_FORMAT_CANDIDATE} ; then
+--      CLANG_FORMAT="${CLANG_FORMAT_CANDIDATE}"
+--      break
+--    fi
+--  done
+--
+--  if [[ -z ${CLANG_FORMAT}  ]]; then
+--    echo "[ERROR] clang-format is unavailable"
+--    echo
+--    echo "Please install clang-format before running format check"
+--    exit 1
+--  fi
+--
+--  # Check c++ files
+--  FILES_TO_CHECK_CPP=()
+--  for f in ${FILES_TO_CHECK[@]}; do
+--    # File extension to check
+--    if [[ ${f} == +(*.h|*.hpp|*.cpp|*.cc|*.c|*.cl|*.ino) ]]; then
+--      FILES_TO_CHECK_CPP+=("${f}")
+--    fi
+--  done
+--
+--  # Skip by '.FORMATDENY' file
+--  for s in ${DIRECTORIES_NOT_TO_BE_TESTED[@]}; do
+--    FILES_TO_CHECK_CPP=(${FILES_TO_CHECK_CPP[*]/$s*/})
+--  done
+--
+--  if [[ ${#FILES_TO_CHECK_CPP} -ne 0 ]]; then
+--    ${CLANG_FORMAT} -i ${FILES_TO_CHECK_CPP[@]}
+--    EXIT_CODE=$?
+--    if [[ ${EXIT_CODE} -ne 0 ]]; then
+--      INVALID_EXIT=${EXIT_CODE}
+--    fi
+--  fi
+--}
+--
+--function check_python_files() {
+--  if [[ ${__Check_PYTHON} -eq 0 ]]; then
+--    echo "[SKIPPED] Python check is skipped"
+--    return
+--  fi
+--
+--  if ! command_exists yapf; then
+--    echo "[ERROR] yapf is unavailable"
+--    echo "       Please install yapf."
+--    exit 1
+--  fi
+--
+--  # Check python files
+--  FILES_TO_CHECK_PYTHON=()
+--  for f in ${FILES_TO_CHECK[@]}; do
+--    # File extension to check
+--    if [[ ${f} == *.py ]]; then
+--      FILES_TO_CHECK_PYTHON+=("${f}")
+--    fi
+--  done
+--  for s in ${DIRECTORIES_NOT_TO_BE_TESTED[@]}; do
+--    skip=${s#'.'/}/
+--    FILES_TO_CHECK_PYTHON=(${FILES_TO_CHECK_PYTHON[*]/$skip*/})
+--  done
+--
+--  if [[ ${#FILES_TO_CHECK_PYTHON} -ne 0 ]]; then
+--    yapf -i ${FILES_TO_CHECK_PYTHON[@]}
+--    EXIT_CODE=$?
+--    if [[ ${EXIT_CODE} -ne 0 ]]; then
+--      INVALID_EXIT=${EXIT_CODE}
+--    fi
+--  fi
+--}
+--
+--pushd ${LP_PROJECT_PATH}
+--
+--if [[ -n "$(git diff)" ]] && { [[ "${CHECK_DIFF_ONLY}" != "1" ]] || [[ "${CHECK_STAGED_ONLY}" != "1" ]]; }; then
+--  echo "[WARNING] Commit all the changes before running format check"
+--  echo "          ${PATCH_FILE} file will contain unstaged files"
+--fi
+--
+--__Check_CPP=${CHECK_CPP:-"1"}
+--__Check_PYTHON=${CHECK_PYTHON:-"1"}
+--
+--FILES_TO_CHECK=$(git ls-files -c --exclude-standard ${DIRECTORIES_TO_BE_TESTED[@]})
+--if [[ "${CHECK_DIFF_ONLY}" = "1" ]]; then
+--  MASTER_EXIST=$(git rev-parse --verify master)
+--  CURRENT_BRANCH=$(git branch | grep \* | cut -d ' ' -f2-)
+--  DIFF_COMMITS=`git log --graph --oneline master..HEAD | wc -l`
+--  if [[ -z "${MASTER_EXIST}" ]]; then
+--    echo "Cannot found local master branch"
+--  elif [[ "${CURRENT_BRANCH}" = "master" ]]; then
+--    echo "Current branch is master"
+--  else
+--    if [[ "${CHECK_STAGED_ONLY}" = "1" ]]; then
+--      FILES_TO_CHECK=$(git diff --staged --name-only --diff-filter=d)
+--    else
+--      FILES_TO_CHECK=$(git diff --name-only --diff-filter=d HEAD~${DIFF_COMMITS})
+--    fi
+--  fi
+--fi
+--
+--for DIR_NOT_TO_BE_TESTED in $(git ls-files -co --exclude-standard '*/.FORMATDENY'); do
+--  DIRECTORIES_NOT_TO_BE_TESTED+=($(dirname "${DIR_NOT_TO_BE_TESTED}"))
+--done
+--
+--exclude_symbolic_links
+--check_newline
+--check_permission
+--check_cpp_files
+--check_python_files
+--
+--if [[ "${CHECK_DIFF_ONLY}" = "1" ]] && [[ "${CHECK_STAGED_ONLY}" = "1" ]]; then
+--  if [[ ! -z "${FILES_TO_CHECK}" ]]; then
+--    DIFF=$(git diff ${FILES_TO_CHECK} | tee ${PATCH_FILE})
+--  fi
+--else
+--  DIFF=$(git diff | tee ${PATCH_FILE})
+--fi
+--
+--popd
+--
+--if [[ -z "${CRCHECK}" ]] && [[ ! -n "${DIFF}" ]] && [[ ${INVALID_EXIT} -eq 0 ]]; then
+--  echo "[PASSED] Format checker succeed."
+--  return
+--fi
+--
+--# Something went wrong
+--
+--if [[ ! -z "${CRCHECK}" ]]; then
+--  echo "[FAILED] Please use LF for newline for following files."
+--  echo "${CRCHECK}"
+--fi
+--
+--if [[ -s ${PATCH_FILE} ]]; then
+--  echo "[FAILED] Format checker failed and update code to follow convention."
+--  echo "         You can find changes in ${PATCH_FILE}"
+--fi
+--
+--if [[ ${INVALID_EXIT} -ne 0 ]]; then
+--  echo "[[FAILED] Invalid format checker exit."
+--fi
+--
+--exit 1
+-diff --git a/format.patch b/format.patch
+-index 65af8f8..e69de29 100644
+---- a/format.patch
+-+++ b/format.patch
+-@@ -1,227 +0,0 @@
+--diff --git a/format.py b/format.py
+--index 0ce6e50..658a298 100644
+----- a/format.py
+--+++ b/format.py
+--@@ -24,11 +24,10 @@ def replacements_from_file(file, style="file"):
+--                                               cwd=os.path.dirname(file))
+--     replacement_xml_root = ET.XML(replacement_xml)
+--     for replacement_item in replacement_xml_root.findall('replacement'):
+---        replacements.append(Replacement(
+---            offset=int(replacement_item.attrib["offset"]),
+---            length=int(replacement_item.attrib["length"]),
+---            text=replacement_item.text
+---        ))
+--+        replacements.append(
+--+            Replacement(offset=int(replacement_item.attrib["offset"]),
+--+                        length=int(replacement_item.attrib["length"]),
+--+                        text=replacement_item.text))
+-- 
+--     return replacements
+-- 
+--@@ -43,16 +42,16 @@ def errors_from_replacements(file, replacements=[]):
+--         lines.append(lines[-1] + len(line))
+-- 
+--     for line_index, line_offset in enumerate(lines[:-1]):
+---        while (len(replacements) > 0 and
+---               lines[line_index + 1] > replacements[0].offset):
+--+        while (len(replacements) > 0
+--+               and lines[line_index + 1] > replacements[0].offset):
+--             replacement = replacements.pop(0)
+---            errors.append(Error(
+---                line=line_index,
+---                column=replacement.offset - line_offset,
+---                found=file_content[replacement.offset:replacement.offset +
+---                                   replacement.length],
+---                expected=replacement.text if replacement.text else ""
+---            ))
+--+            errors.append(
+--+                Error(
+--+                    line=line_index,
+--+                    column=replacement.offset - line_offset,
+--+                    found=file_content[replacement.offset:replacement.offset +
+--+                                       replacement.length],
+--+                    expected=replacement.text if replacement.text else ""))
+-- 
+--         if len(replacements) == 0:
+--             break
+--@@ -103,7 +102,8 @@ def main():
+--         description="C/C++ formatting check using clang-format")
+-- 
+--     # Style
+---    parser.add_argument("-s", "--style",
+--+    parser.add_argument("-s",
+--+                        "--style",
+--                         default="file",
+--                         help="Coding style, pass-through to clang-format's "
+--                         "-style=<string>, (default is '%(default)s').")
+--@@ -115,7 +115,9 @@ def main():
+--                         "exit status) if clang-format is not available.")
+-- 
+--     # Files or directory to check
+---    parser.add_argument("file", nargs="+", help="Paths to the files that'll "
+--+    parser.add_argument("file",
+--+                        nargs="+",
+--+                        help="Paths to the files that'll "
+--                         "be checked (wilcards accepted).")
+--     args = parser.parse_args()
+-- 
+--@@ -126,7 +128,8 @@ def main():
+-- 
+--         # Checking that clang-format is available
+--         if not check_clang_format_exec():
+---            print("Can't run 'clang-format', please make sure it is installed ")
+--+            print(
+--+                "Can't run 'clang-format', please make sure it is installed ")
+--             "and reachable in your PATH."
+--             if args.success_on_missing_clang_format:
+--                 exit(0)
+--@@ -149,10 +152,11 @@ def main():
+--     except Exception(e):
+--         print("Exception raised:")
+--         print("    " + str(e))
+---        print('-'*60)
+--+        print('-' * 60)
+--         traceback.print_exc()
+---        print('-'*60)
+--+        print('-' * 60)
+--         exit(-2)
+-- 
+--+
+-- if __name__ == "__main__":
+---    main()
+--\ No newline at end of file
+--+    main()
+--diff --git a/infra/command/format b/infra/command/format
+--index 779958e..73dba6e 100644
+----- a/infra/command/format
+--+++ b/infra/command/format
+--@@ -12,7 +12,7 @@ CHECK_STAGED_ONLY="0"
+-- function Usage()
+-- {
+--   echo "Usage: $0 $(basename ${BASH_SOURCE[0]}) [OPTIONS] [<file|dir> ...]"
+---  echo "If no arguments are specified, it formats all lp codes"
+--+  echo "If no arguments are specified, it formats all nnas codes"
+--   echo "If <file>s are given, it reformats the files"
+--   echo ""
+--   echo "Options:"
+--@@ -109,7 +109,7 @@ function check_permission() {
+--   FILES_TO_CHECK_PERMISSION=()
+--   for f in ${FILES_TO_CHECK[@]}; do
+--     # Manually ignore permission checking
+---    if [[ ${f} == !(lp|*.sh|*.py|*/gradlew) ]] ; then
+--+    if [[ ${f} == !(nnas|nnfw|nncc|*.sh|*.py|*/gradlew) ]] || [[ ${f} == tests/nnapi/specs/**/*.py ]]; then
+--       FILES_TO_CHECK_PERMISSION+=("${f}")
+--     fi
+--   done
+--@@ -151,8 +151,13 @@ function check_cpp_files() {
+--   # Check c++ files
+--   FILES_TO_CHECK_CPP=()
+--   for f in ${FILES_TO_CHECK[@]}; do
+--+    # Manually ignore style checking
+--+    if [[ ${f} == +(*/NeuralNetworks.h|*/NeuralNetworksExtensions.h) ]]; then
+--+      continue
+--+    fi
+--+
+--     # File extension to check
+---    if [[ ${f} == +(*.h|*.hpp|*.cpp|*.cc|*.c|*.cl|*.ino) ]]; then
+--+    if [[ ${f} == +(*.h|*.hpp|*.cpp|*.cc|*.c|*.cl) ]]; then
+--       FILES_TO_CHECK_CPP+=("${f}")
+--     fi
+--   done
+--@@ -205,7 +210,7 @@ function check_python_files() {
+--   fi
+-- }
+-- 
+---pushd ${LP_PROJECT_PATH}
+--+pushd ${NNAS_PROJECT_PATH}
+-- 
+-- if [[ -n "$(git diff)" ]] && { [[ "${CHECK_DIFF_ONLY}" != "1" ]] || [[ "${CHECK_STAGED_ONLY}" != "1" ]]; }; then
+--   echo "[WARNING] Commit all the changes before running format check"
+--diff --git a/lp b/lp
+--old mode 100755
+--new mode 100644
+--diff --git a/source/clang b/source/clang
+--deleted file mode 100755
+--index 1547be1..0000000
+----- a/source/clang
+--+++ /dev/null
+--@@ -1,28 +0,0 @@
+---#!/bin/bash
+---
+---CLANG_FORMAT=${CLANG_FORMAT:-clang-format}
+---CLANG_FORMAT_VERSION=${CLANG_FORMAT_VERSION:-}
+---
+---if ! type $CLANG_FORMAT >/dev/null || \
+---        ! $CLANG_FORMAT --version | grep -q "version ${CLANG_FORMAT_VERSION}"; then
+---    # If running tests, mark this test as skipped.
+---    exit 77
+---fi
+---
+---errors=0
+---paths=$(git ls-files | grep '\.[ch]$')
+---for path in $paths; do
+---    in=$(cat $path)
+---    out=$($CLANG_FORMAT $path)
+---
+---    if [ "$in" != "$out" ]; then
+---        diff -u -L $path -L "$path.formatted" $path - <<<$out
+---        errors=1
+---    fi
+---echo "Successful"
+---done
+---
+---if [ $errors -ne 0 ]; then
+---    echo "Formatting errors detected, run ./scripts/clang-format to fix!"
+---    exit 1
+---fi
+--\ No newline at end of file
+--diff --git a/source/test.cpp b/source/test.cpp
+--index 8162a45..c5cbc80 100644
+----- a/source/test.cpp
+--+++ b/source/test.cpp
+--@@ -1,24 +1,20 @@
+---#include <iostream>
+---
+---void main()                                                                                           {
+---            int i = 0; 
+---    cout << "i: "             <<               i                  <<                        endl;
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---
+---    
+---    return;
+---}
+--\ No newline at end of file
+--+TEST(ArgMaxTest, UnsupportedType_NEG) {
+--+  Tensor input_tensor = makeInputTensor<DataType::FLOAT32>({1, 1, 2, 4}, {
+--+                                                                             1,
+--+                                                                             2,
+--+                                                                             7,
+--+                                                                             8,
+--+                                                                             1,
+--+                                                                             9,
+--+                                                                             7,
+--+                                                                             3,
+--+                                                                         });
+--+  Tensor dimension_tensor = makeInputTensor<DataType::S32>({}, {3});
+--+  Tensor output_tensor = makeOutputTensor(DataType::U8);
+--+
+--+  ArgMaxParams params{};
+--+  params.output_type = DataType::U8;
+--+  ArgMax kernel(&input_tensor, &dimension_tensor, &output_tensor, params);
+--+  kernel.configure();
+--+  EXPECT_ANY_THROW(kernel.execute());
+--+}
 -diff --git a/format.py b/format.py
--index 0ce6e50..658a298 100644
+-deleted file mode 100644
+-index 658a298..0000000
 ---- a/format.py
--+++ b/format.py
--@@ -24,11 +24,10 @@ def replacements_from_file(file, style="file"):
--                                               cwd=os.path.dirname(file))
--     replacement_xml_root = ET.XML(replacement_xml)
--     for replacement_item in replacement_xml_root.findall('replacement'):
---        replacements.append(Replacement(
---            offset=int(replacement_item.attrib["offset"]),
---            length=int(replacement_item.attrib["length"]),
---            text=replacement_item.text
---        ))
--+        replacements.append(
--+            Replacement(offset=int(replacement_item.attrib["offset"]),
--+                        length=int(replacement_item.attrib["length"]),
--+                        text=replacement_item.text))
-- 
--     return replacements
-- 
--@@ -43,16 +42,16 @@ def errors_from_replacements(file, replacements=[]):
--         lines.append(lines[-1] + len(line))
-- 
--     for line_index, line_offset in enumerate(lines[:-1]):
---        while (len(replacements) > 0 and
---               lines[line_index + 1] > replacements[0].offset):
--+        while (len(replacements) > 0
--+               and lines[line_index + 1] > replacements[0].offset):
--             replacement = replacements.pop(0)
---            errors.append(Error(
---                line=line_index,
---                column=replacement.offset - line_offset,
---                found=file_content[replacement.offset:replacement.offset +
---                                   replacement.length],
---                expected=replacement.text if replacement.text else ""
---            ))
--+            errors.append(
--+                Error(
--+                    line=line_index,
--+                    column=replacement.offset - line_offset,
--+                    found=file_content[replacement.offset:replacement.offset +
--+                                       replacement.length],
--+                    expected=replacement.text if replacement.text else ""))
-- 
--         if len(replacements) == 0:
--             break
--@@ -103,7 +102,8 @@ def main():
--         description="C/C++ formatting check using clang-format")
-- 
--     # Style
---    parser.add_argument("-s", "--style",
--+    parser.add_argument("-s",
--+                        "--style",
--                         default="file",
--                         help="Coding style, pass-through to clang-format's "
--                         "-style=<string>, (default is '%(default)s').")
--@@ -115,7 +115,9 @@ def main():
--                         "exit status) if clang-format is not available.")
-- 
--     # Files or directory to check
---    parser.add_argument("file", nargs="+", help="Paths to the files that'll "
--+    parser.add_argument("file",
--+                        nargs="+",
--+                        help="Paths to the files that'll "
--                         "be checked (wilcards accepted).")
--     args = parser.parse_args()
-- 
--@@ -126,7 +128,8 @@ def main():
-- 
--         # Checking that clang-format is available
--         if not check_clang_format_exec():
---            print("Can't run 'clang-format', please make sure it is installed ")
--+            print(
--+                "Can't run 'clang-format', please make sure it is installed ")
--             "and reachable in your PATH."
--             if args.success_on_missing_clang_format:
--                 exit(0)
--@@ -149,10 +152,11 @@ def main():
--     except Exception(e):
--         print("Exception raised:")
--         print("    " + str(e))
---        print('-'*60)
--+        print('-' * 60)
--         traceback.print_exc()
---        print('-'*60)
--+        print('-' * 60)
--         exit(-2)
-- 
--+
-- if __name__ == "__main__":
+-+++ /dev/null
+-@@ -1,162 +0,0 @@
+--import argparse
+--import glob
+--import os
+--import subprocess
+--import traceback
+--import xml.etree.ElementTree as ET
+--
+--from collections import namedtuple
+--Replacement = namedtuple("Replacement", "offset length text")
+--Error = namedtuple("Error", "line column found expected")
+--
+--__author__ = "github.com/underflow101"
+--__version__ = "0.1"
+--
+--
+--def replacements_from_file(file, style="file"):
+--    replacements = []
+--
+--    clang_format_args = ["clang-format"]
+--    clang_format_args.append("-style={}".format(style))
+--    clang_format_args.append("-output-replacements-xml")
+--    clang_format_args.append(os.path.basename(file))
+--    replacement_xml = subprocess.check_output(clang_format_args,
+--                                              cwd=os.path.dirname(file))
+--    replacement_xml_root = ET.XML(replacement_xml)
+--    for replacement_item in replacement_xml_root.findall('replacement'):
+--        replacements.append(
+--            Replacement(offset=int(replacement_item.attrib["offset"]),
+--                        length=int(replacement_item.attrib["length"]),
+--                        text=replacement_item.text))
+--
+--    return replacements
+--
+--
+--def errors_from_replacements(file, replacements=[]):
+--    errors = []
+--
+--    lines = [0]  # line index to character offset
+--    file_content = ""
+--    for line in open(file, "r"):
+--        file_content += line
+--        lines.append(lines[-1] + len(line))
+--
+--    for line_index, line_offset in enumerate(lines[:-1]):
+--        while (len(replacements) > 0
+--               and lines[line_index + 1] > replacements[0].offset):
+--            replacement = replacements.pop(0)
+--            errors.append(
+--                Error(
+--                    line=line_index,
+--                    column=replacement.offset - line_offset,
+--                    found=file_content[replacement.offset:replacement.offset +
+--                                       replacement.length],
+--                    expected=replacement.text if replacement.text else ""))
+--
+--        if len(replacements) == 0:
+--            break
+--
+--    return errors
+--
+--
+--def clang_format_check(files=[], style="file"):
+--    error_count = 0
+--    file_errors = dict()
+--
+--    for file in files:
+--        replacements = replacements_from_file(file, style)
+--        errors = errors_from_replacements(file, replacements)
+--        error_count += len(errors)
+--        file_errors[file] = errors
+--    return error_count, file_errors
+--
+--
+--def print_error_report(error_count, file_errors):
+--    if error_count == 0:
+--        print("No format error found")
+--    else:
+--        for file, errors in file_errors.iteritems():
+--            print("-- {} format errors at {}:").format(len(errors), file)
+--            for error in errors:
+--                print("    ({},{})").format(error.line + 1, error.column + 1)
+--                # print "        - found: \"{}\"".format(error.found)
+--                # print "        - expected: \"{}\"".format(error.expected)
+--        print("---")
+--        print("A total of {} format errors were found").format(error_count)
+--
+--
+--def check_clang_format_exec():
+--    try:
+--        subprocess.check_output(["clang-format", "-version"])
+--        return True
+--    except subprocess.CalledProcessError(e):
+--        # it seems that in some version of clang-format '-version' leads to
+--        # non-zero exist status
+--        return True
+--    except OSError(e):
+--        return False
+--
+--
+--def main():
+--    parser = argparse.ArgumentParser(
+--        description="C/C++ formatting check using clang-format")
+--
+--    # Style
+--    parser.add_argument("-s",
+--                        "--style",
+--                        default="file",
+--                        help="Coding style, pass-through to clang-format's "
+--                        "-style=<string>, (default is '%(default)s').")
+--
+--    # Exit cleanly on missing clang-format
+--    parser.add_argument("--success-on-missing-clang-format",
+--                        action="store_true",
+--                        help="If set this flag will lead to a success (zero "
+--                        "exit status) if clang-format is not available.")
+--
+--    # Files or directory to check
+--    parser.add_argument("file",
+--                        nargs="+",
+--                        help="Paths to the files that'll "
+--                        "be checked (wilcards accepted).")
+--    args = parser.parse_args()
+--
+--    try:
+--        # Adding the double quotes around the inline style
+--        if len(args.style) > 0 and args.style[0] == "{":
+--            args.style = "\"" + args.style + "\""
+--
+--        # Checking that clang-format is available
+--        if not check_clang_format_exec():
+--            print(
+--                "Can't run 'clang-format', please make sure it is installed ")
+--            "and reachable in your PATH."
+--            if args.success_on_missing_clang_format:
+--                exit(0)
+--            else:
+--                exit(-1)
+--
+--        # globing the file paths
+--        files = set()
+--        for pattern in args.file:
+--            for file in glob.iglob(pattern):
+--                files.add(os.path.relpath(file))
+--
+--        file_list = list(files)
+--        print("Checking {} files...").format(len(file_list))
+--        error_count, file_errors = clang_format_check(style=args.style,
+--                                                      files=file_list)
+--        print_error_report(error_count, file_errors)
+--        exit(error_count)
+--
+--    except Exception(e):
+--        print("Exception raised:")
+--        print("    " + str(e))
+--        print('-' * 60)
+--        traceback.print_exc()
+--        print('-' * 60)
+--        exit(-2)
+--
+--
+--if __name__ == "__main__":
 --    main()
--\ No newline at end of file
--+    main()
 -diff --git a/infra/command/format b/infra/command/format
--index 779958e..73dba6e 100644
+-index 73dba6e..779958e 100644
 ---- a/infra/command/format
 -+++ b/infra/command/format
 -@@ -12,7 +12,7 @@ CHECK_STAGED_ONLY="0"
 - function Usage()
 - {
 -   echo "Usage: $0 $(basename ${BASH_SOURCE[0]}) [OPTIONS] [<file|dir> ...]"
---  echo "If no arguments are specified, it formats all lp codes"
--+  echo "If no arguments are specified, it formats all nnas codes"
+--  echo "If no arguments are specified, it formats all nnas codes"
+-+  echo "If no arguments are specified, it formats all lp codes"
 -   echo "If <file>s are given, it reformats the files"
 -   echo ""
 -   echo "Options:"
@@ -396,436 +703,193 @@ index 65af8f8..e69de29 100644
 -   FILES_TO_CHECK_PERMISSION=()
 -   for f in ${FILES_TO_CHECK[@]}; do
 -     # Manually ignore permission checking
---    if [[ ${f} == !(lp|*.sh|*.py|*/gradlew) ]] ; then
--+    if [[ ${f} == !(nnas|nnfw|nncc|*.sh|*.py|*/gradlew) ]] || [[ ${f} == tests/nnapi/specs/**/*.py ]]; then
+--    if [[ ${f} == !(nnas|nnfw|nncc|*.sh|*.py|*/gradlew) ]] || [[ ${f} == tests/nnapi/specs/**/*.py ]]; then
+-+    if [[ ${f} == !(lp|*.sh|*.py|*/gradlew) ]] ; then
 -       FILES_TO_CHECK_PERMISSION+=("${f}")
 -     fi
 -   done
--@@ -151,8 +151,13 @@ function check_cpp_files() {
+-@@ -151,13 +151,8 @@ function check_cpp_files() {
 -   # Check c++ files
 -   FILES_TO_CHECK_CPP=()
 -   for f in ${FILES_TO_CHECK[@]}; do
--+    # Manually ignore style checking
--+    if [[ ${f} == +(*/NeuralNetworks.h|*/NeuralNetworksExtensions.h) ]]; then
--+      continue
--+    fi
--+
+--    # Manually ignore style checking
+--    if [[ ${f} == +(*/NeuralNetworks.h|*/NeuralNetworksExtensions.h) ]]; then
+--      continue
+--    fi
+--
 -     # File extension to check
---    if [[ ${f} == +(*.h|*.hpp|*.cpp|*.cc|*.c|*.cl|*.ino) ]]; then
--+    if [[ ${f} == +(*.h|*.hpp|*.cpp|*.cc|*.c|*.cl) ]]; then
+--    if [[ ${f} == +(*.h|*.hpp|*.cpp|*.cc|*.c|*.cl) ]]; then
+-+    if [[ ${f} == +(*.h|*.hpp|*.cpp|*.cc|*.c|*.cl|*.ino) ]]; then
 -       FILES_TO_CHECK_CPP+=("${f}")
 -     fi
 -   done
--@@ -205,7 +210,7 @@ function check_python_files() {
+-@@ -210,7 +205,7 @@ function check_python_files() {
 -   fi
 - }
 - 
---pushd ${LP_PROJECT_PATH}
--+pushd ${NNAS_PROJECT_PATH}
+--pushd ${NNAS_PROJECT_PATH}
+-+pushd ${LP_PROJECT_PATH}
 - 
 - if [[ -n "$(git diff)" ]] && { [[ "${CHECK_DIFF_ONLY}" != "1" ]] || [[ "${CHECK_STAGED_ONLY}" != "1" ]]; }; then
 -   echo "[WARNING] Commit all the changes before running format check"
--diff --git a/lp b/lp
--old mode 100755
--new mode 100644
--diff --git a/source/clang b/source/clang
--deleted file mode 100755
--index 1547be1..0000000
----- a/source/clang
+-diff --git a/infra/config/build.configuration b/infra/config/build.configuration
+-deleted file mode 100644
+-index 10e4187..0000000
+---- a/infra/config/build.configuration
 -+++ /dev/null
--@@ -1,28 +0,0 @@
+-@@ -1 +0,0 @@
+--BUILD_WORKSPACE_RPATH=${NNAS_WORKSPACE:-build}
+-diff --git a/infra/config/docker.configuration b/infra/config/docker.configuration
+-deleted file mode 100644
+-index 2e00137..0000000
+---- a/infra/config/docker.configuration
+-+++ /dev/null
+-@@ -1,52 +0,0 @@
 --#!/bin/bash
 --
---CLANG_FORMAT=${CLANG_FORMAT:-clang-format}
---CLANG_FORMAT_VERSION=${CLANG_FORMAT_VERSION:-}
+--# Don't run this script
+--[[ "${BASH_SOURCE[0]}" == "${0}" ]] && echo "Please don't execute ${BASH_SOURCE[0]}" && exit 1
 --
---if ! type $CLANG_FORMAT >/dev/null || \
---        ! $CLANG_FORMAT --version | grep -q "version ${CLANG_FORMAT_VERSION}"; then
---    # If running tests, mark this test as skipped.
---    exit 77
+--DOCKER_IMAGE_NAME=${DOCKER_IMAGE_NAME:-nnfw/one-devtools}
+--echo "Using docker image ${DOCKER_IMAGE_NAME}"
+--
+--if [ -z "`docker images ${DOCKER_IMAGE_NAME}`" ]; then
+--  echo "Need docker image!"
+--  exit 1
 --fi
 --
---errors=0
---paths=$(git ls-files | grep '\.[ch]$')
---for path in $paths; do
---    in=$(cat $path)
---    out=$($CLANG_FORMAT $path)
+--HOST_PATH="${NNAS_PROJECT_PATH}"
+--DOCKER_PATH="${NNAS_PROJECT_PATH}"
 --
---    if [ "$in" != "$out" ]; then
---        diff -u -L $path -L "$path.formatted" $path - <<<$out
---        errors=1
---    fi
---echo "Successful"
---done
+--export GIT_SSL_NO_VERIFY=1
 --
---if [ $errors -ne 0 ]; then
---    echo "Formatting errors detected, run ./scripts/clang-format to fix!"
---    exit 1
+--DOCKER_VOLUMES+=" -v ${HOST_PATH}:${DOCKER_PATH}"
+--
+--if [[ ! -z "${ENV_FILE}" ]]; then
+--  if [[ -e ${ENV_FILE} ]]; then
+--    DOCKER_ENV_VARS+=" --env-file ${ENV_FILE} "
+--  else
+--    echo "[WARNING] Cannot find docker environment variable list file: ${ENV_FILE}"
+--  fi
 --fi
--\ No newline at end of file
+--
+--DOCKER_ENV_VARS+=" -e http_proxy"
+--DOCKER_ENV_VARS+=" -e no_proxy"
+--DOCKER_ENV_VARS+=" -e GIT_SSL_NO_VERIFY"
+--DOCKER_ENV_VARS+=" -e NNAS_WORKSPACE"
+--DOCKER_ENV_VARS+=" -e NNCC_WORKSPACE"
+--DOCKER_ENV_VARS+=" -e NNFW_WORKSPACE"
+--
+--DOCKER_RUN_OPTS="${DOCKER_OPTS}"
+--DOCKER_RUN_OPTS+=" --rm"
+--DOCKER_RUN_OPTS+=" -w ${DOCKER_PATH}"
+--
+--function docker_cleanup()
+--{
+--  # Newly created files during during docker run can have different ownership.
+--  # This may cause some problems, for example, some jenkins slaves or developers
+--  # can't remove built files due to lack of permission.
+--  # To address this issue, let's change owner of all files
+--  # in nncc to owner of nncc.
+--  NNFW_OWNER_UID=$(stat -c "%u" ${HOST_PATH})
+--  NNFW_OWNER_GID=$(stat -c "%g" ${HOST_PATH})
+--
+--  CMD="chown -R ${NNFW_OWNER_UID}:${NNFW_OWNER_GID} ${DOCKER_PATH}"
+--  docker run ${DOCKER_RUN_OPTS} ${DOCKER_ENV_VARS} ${DOCKER_VOLUMES} ${DOCKER_IMAGE_NAME} ${CMD}
+--}
+-diff --git a/lp b/lp
+-old mode 100644
+-new mode 100755
 -diff --git a/source/test.cpp b/source/test.cpp
--index 8162a45..c5cbc80 100644
+-index c5cbc80..04901ea 100644
 ---- a/source/test.cpp
 -+++ b/source/test.cpp
--@@ -1,24 +1,20 @@
---#include <iostream>
---
---void main()                                                                                           {
---            int i = 0; 
---    cout << "i: "             <<               i                  <<                        endl;
---
---
---
---
---
---
---
---
---
---
---
---
---
---
---
---
---    
---    return;
---}
--\ No newline at end of file
--+TEST(ArgMaxTest, UnsupportedType_NEG) {
--+  Tensor input_tensor = makeInputTensor<DataType::FLOAT32>({1, 1, 2, 4}, {
--+                                                                             1,
--+                                                                             2,
--+                                                                             7,
--+                                                                             8,
--+                                                                             1,
--+                                                                             9,
--+                                                                             7,
--+                                                                             3,
--+                                                                         });
--+  Tensor dimension_tensor = makeInputTensor<DataType::S32>({}, {3});
--+  Tensor output_tensor = makeOutputTensor(DataType::U8);
+-@@ -1,20 +1,11 @@
+--TEST(ArgMaxTest, UnsupportedType_NEG) {
+--  Tensor input_tensor = makeInputTensor<DataType::FLOAT32>({1, 1, 2, 4}, {
+--                                                                             1,
+--                                                                             2,
+--                                                                             7,
+--                                                                             8,
+--                                                                             1,
+--                                                                             9,
+--                                                                             7,
+--                                                                             3,
+--                                                                         });
+--  Tensor dimension_tensor = makeInputTensor<DataType::S32>({}, {3});
+--  Tensor output_tensor = makeOutputTensor(DataType::U8);
+-+#include <iostream>
+- 
+--  ArgMaxParams params{};
+--  params.output_type = DataType::U8;
+--  ArgMax kernel(&input_tensor, &dimension_tensor, &output_tensor, params);
+--  kernel.configure();
+--  EXPECT_ANY_THROW(kernel.execute());
+-+void main() {
+-+  int i = 0;
+-+  cout << "i: " << i
+-+       << "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+-+          "aaaaaaaaaaaaaaaaaaaAAAAAA"
+-+       << endl;
 -+
--+  ArgMaxParams params{};
--+  params.output_type = DataType::U8;
--+  ArgMax kernel(&input_tensor, &dimension_tensor, &output_tensor, params);
--+  kernel.configure();
--+  EXPECT_ANY_THROW(kernel.execute());
--+}
-diff --git a/format.py b/format.py
-deleted file mode 100644
-index 658a298..0000000
---- a/format.py
-+++ /dev/null
-@@ -1,162 +0,0 @@
--import argparse
--import glob
--import os
--import subprocess
--import traceback
--import xml.etree.ElementTree as ET
--
--from collections import namedtuple
--Replacement = namedtuple("Replacement", "offset length text")
--Error = namedtuple("Error", "line column found expected")
--
--__author__ = "github.com/underflow101"
--__version__ = "0.1"
--
--
--def replacements_from_file(file, style="file"):
--    replacements = []
--
--    clang_format_args = ["clang-format"]
--    clang_format_args.append("-style={}".format(style))
--    clang_format_args.append("-output-replacements-xml")
--    clang_format_args.append(os.path.basename(file))
--    replacement_xml = subprocess.check_output(clang_format_args,
--                                              cwd=os.path.dirname(file))
--    replacement_xml_root = ET.XML(replacement_xml)
--    for replacement_item in replacement_xml_root.findall('replacement'):
--        replacements.append(
--            Replacement(offset=int(replacement_item.attrib["offset"]),
--                        length=int(replacement_item.attrib["length"]),
--                        text=replacement_item.text))
--
--    return replacements
--
--
--def errors_from_replacements(file, replacements=[]):
--    errors = []
--
--    lines = [0]  # line index to character offset
--    file_content = ""
--    for line in open(file, "r"):
--        file_content += line
--        lines.append(lines[-1] + len(line))
--
--    for line_index, line_offset in enumerate(lines[:-1]):
--        while (len(replacements) > 0
--               and lines[line_index + 1] > replacements[0].offset):
--            replacement = replacements.pop(0)
--            errors.append(
--                Error(
--                    line=line_index,
--                    column=replacement.offset - line_offset,
--                    found=file_content[replacement.offset:replacement.offset +
--                                       replacement.length],
--                    expected=replacement.text if replacement.text else ""))
--
--        if len(replacements) == 0:
--            break
--
--    return errors
--
--
--def clang_format_check(files=[], style="file"):
--    error_count = 0
--    file_errors = dict()
--
--    for file in files:
--        replacements = replacements_from_file(file, style)
--        errors = errors_from_replacements(file, replacements)
--        error_count += len(errors)
--        file_errors[file] = errors
--    return error_count, file_errors
--
--
--def print_error_report(error_count, file_errors):
--    if error_count == 0:
--        print("No format error found")
--    else:
--        for file, errors in file_errors.iteritems():
--            print("-- {} format errors at {}:").format(len(errors), file)
--            for error in errors:
--                print("    ({},{})").format(error.line + 1, error.column + 1)
--                # print "        - found: \"{}\"".format(error.found)
--                # print "        - expected: \"{}\"".format(error.expected)
--        print("---")
--        print("A total of {} format errors were found").format(error_count)
--
--
--def check_clang_format_exec():
--    try:
--        subprocess.check_output(["clang-format", "-version"])
--        return True
--    except subprocess.CalledProcessError(e):
--        # it seems that in some version of clang-format '-version' leads to
--        # non-zero exist status
--        return True
--    except OSError(e):
--        return False
--
--
--def main():
--    parser = argparse.ArgumentParser(
--        description="C/C++ formatting check using clang-format")
--
--    # Style
--    parser.add_argument("-s",
--                        "--style",
--                        default="file",
--                        help="Coding style, pass-through to clang-format's "
--                        "-style=<string>, (default is '%(default)s').")
--
--    # Exit cleanly on missing clang-format
--    parser.add_argument("--success-on-missing-clang-format",
--                        action="store_true",
--                        help="If set this flag will lead to a success (zero "
--                        "exit status) if clang-format is not available.")
--
--    # Files or directory to check
--    parser.add_argument("file",
--                        nargs="+",
--                        help="Paths to the files that'll "
--                        "be checked (wilcards accepted).")
--    args = parser.parse_args()
--
--    try:
--        # Adding the double quotes around the inline style
--        if len(args.style) > 0 and args.style[0] == "{":
--            args.style = "\"" + args.style + "\""
--
--        # Checking that clang-format is available
--        if not check_clang_format_exec():
--            print(
--                "Can't run 'clang-format', please make sure it is installed ")
--            "and reachable in your PATH."
--            if args.success_on_missing_clang_format:
--                exit(0)
--            else:
--                exit(-1)
--
--        # globing the file paths
--        files = set()
--        for pattern in args.file:
--            for file in glob.iglob(pattern):
--                files.add(os.path.relpath(file))
--
--        file_list = list(files)
--        print("Checking {} files...").format(len(file_list))
--        error_count, file_errors = clang_format_check(style=args.style,
--                                                      files=file_list)
--        print_error_report(error_count, file_errors)
--        exit(error_count)
--
--    except Exception(e):
--        print("Exception raised:")
--        print("    " + str(e))
--        print('-' * 60)
--        traceback.print_exc()
--        print('-' * 60)
--        exit(-2)
--
--
--if __name__ == "__main__":
--    main()
-diff --git a/infra/command/format b/infra/command/format
-index 73dba6e..779958e 100644
---- a/infra/command/format
-+++ b/infra/command/format
-@@ -12,7 +12,7 @@ CHECK_STAGED_ONLY="0"
+-+  return;
+- }
+diff --git a/lp b/lp
+index f5457bc..508e7f3 100755
+--- a/lp
++++ b/lp
+@@ -2,16 +2,12 @@
+ 
+ LP_CONFIG_RPATH="infra/config"
+ LP_COMMAND_RPATH="infra/command"
+-LP_PROJECT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++LP_PACKAGE_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++LP_PROJECT_PATH=$2
+ 
  function Usage()
  {
-   echo "Usage: $0 $(basename ${BASH_SOURCE[0]}) [OPTIONS] [<file|dir> ...]"
--  echo "If no arguments are specified, it formats all nnas codes"
-+  echo "If no arguments are specified, it formats all lp codes"
-   echo "If <file>s are given, it reformats the files"
-   echo ""
-   echo "Options:"
-@@ -109,7 +109,7 @@ function check_permission() {
-   FILES_TO_CHECK_PERMISSION=()
-   for f in ${FILES_TO_CHECK[@]}; do
-     # Manually ignore permission checking
--    if [[ ${f} == !(nnas|nnfw|nncc|*.sh|*.py|*/gradlew) ]] || [[ ${f} == tests/nnapi/specs/**/*.py ]]; then
-+    if [[ ${f} == !(lp|*.sh|*.py|*/gradlew) ]] ; then
-       FILES_TO_CHECK_PERMISSION+=("${f}")
-     fi
-   done
-@@ -151,13 +151,8 @@ function check_cpp_files() {
-   # Check c++ files
-   FILES_TO_CHECK_CPP=()
-   for f in ${FILES_TO_CHECK[@]}; do
--    # Manually ignore style checking
--    if [[ ${f} == +(*/NeuralNetworks.h|*/NeuralNetworksExtensions.h) ]]; then
--      continue
--    fi
--
-     # File extension to check
--    if [[ ${f} == +(*.h|*.hpp|*.cpp|*.cc|*.c|*.cl) ]]; then
-+    if [[ ${f} == +(*.h|*.hpp|*.cpp|*.cc|*.c|*.cl|*.ino) ]]; then
-       FILES_TO_CHECK_CPP+=("${f}")
-     fi
-   done
-@@ -210,7 +205,7 @@ function check_python_files() {
-   fi
+-  echo "Usage: $0 [COMMAND] ..."
+-  echo "Command:"
+-  for file in "$LP_COMMAND_RPATH"/*;
+-  do
+-    echo "  $(basename "$file")"
+-  done
++  echo "Usage: $0 format [DIRECTORY] ..."
  }
  
--pushd ${NNAS_PROJECT_PATH}
-+pushd ${LP_PROJECT_PATH}
+ function import()
+@@ -26,13 +22,18 @@ if [[ -z "${COMMAND}" ]]; then
+   exit 255
+ fi
  
- if [[ -n "$(git diff)" ]] && { [[ "${CHECK_DIFF_ONLY}" != "1" ]] || [[ "${CHECK_STAGED_ONLY}" != "1" ]]; }; then
-   echo "[WARNING] Commit all the changes before running format check"
-diff --git a/infra/config/build.configuration b/infra/config/build.configuration
-deleted file mode 100644
-index 10e4187..0000000
---- a/infra/config/build.configuration
-+++ /dev/null
-@@ -1 +0,0 @@
--BUILD_WORKSPACE_RPATH=${NNAS_WORKSPACE:-build}
-diff --git a/infra/config/docker.configuration b/infra/config/docker.configuration
-deleted file mode 100644
-index 2e00137..0000000
---- a/infra/config/docker.configuration
-+++ /dev/null
-@@ -1,52 +0,0 @@
--#!/bin/bash
--
--# Don't run this script
--[[ "${BASH_SOURCE[0]}" == "${0}" ]] && echo "Please don't execute ${BASH_SOURCE[0]}" && exit 1
--
--DOCKER_IMAGE_NAME=${DOCKER_IMAGE_NAME:-nnfw/one-devtools}
--echo "Using docker image ${DOCKER_IMAGE_NAME}"
--
--if [ -z "`docker images ${DOCKER_IMAGE_NAME}`" ]; then
--  echo "Need docker image!"
--  exit 1
--fi
--
--HOST_PATH="${NNAS_PROJECT_PATH}"
--DOCKER_PATH="${NNAS_PROJECT_PATH}"
--
--export GIT_SSL_NO_VERIFY=1
--
--DOCKER_VOLUMES+=" -v ${HOST_PATH}:${DOCKER_PATH}"
--
--if [[ ! -z "${ENV_FILE}" ]]; then
--  if [[ -e ${ENV_FILE} ]]; then
--    DOCKER_ENV_VARS+=" --env-file ${ENV_FILE} "
--  else
--    echo "[WARNING] Cannot find docker environment variable list file: ${ENV_FILE}"
--  fi
--fi
--
--DOCKER_ENV_VARS+=" -e http_proxy"
--DOCKER_ENV_VARS+=" -e no_proxy"
--DOCKER_ENV_VARS+=" -e GIT_SSL_NO_VERIFY"
--DOCKER_ENV_VARS+=" -e NNAS_WORKSPACE"
--DOCKER_ENV_VARS+=" -e NNCC_WORKSPACE"
--DOCKER_ENV_VARS+=" -e NNFW_WORKSPACE"
--
--DOCKER_RUN_OPTS="${DOCKER_OPTS}"
--DOCKER_RUN_OPTS+=" --rm"
--DOCKER_RUN_OPTS+=" -w ${DOCKER_PATH}"
--
--function docker_cleanup()
--{
--  # Newly created files during during docker run can have different ownership.
--  # This may cause some problems, for example, some jenkins slaves or developers
--  # can't remove built files due to lack of permission.
--  # To address this issue, let's change owner of all files
--  # in nncc to owner of nncc.
--  NNFW_OWNER_UID=$(stat -c "%u" ${HOST_PATH})
--  NNFW_OWNER_GID=$(stat -c "%g" ${HOST_PATH})
--
--  CMD="chown -R ${NNFW_OWNER_UID}:${NNFW_OWNER_GID} ${DOCKER_PATH}"
--  docker run ${DOCKER_RUN_OPTS} ${DOCKER_ENV_VARS} ${DOCKER_VOLUMES} ${DOCKER_IMAGE_NAME} ${CMD}
--}
-diff --git a/lp b/lp
-old mode 100644
-new mode 100755
+-COMMAND_FILE="${LP_PROJECT_PATH}/${LP_COMMAND_RPATH}/${COMMAND}"
++COMMAND_FILE="${LP_PACKAGE_PATH}/${LP_COMMAND_RPATH}/${COMMAND}"
+ 
+ if [[ ! -f "${COMMAND_FILE}" ]]; then
+-  echo "ERROR: '${COMMAND}' is not supported"
++  echo "ERROR: Use exact directory, or ${COMMAND} is not valid."
+   exit 255
+ fi
+ 
+ export LP_PROJECT_PATH
+ 
++if [[ -z "${LP_PROJECT_PATH}" ]]; then
++  Usage
++  exit 255
++fi
++
+ source "${COMMAND_FILE}" "$@"
 diff --git a/source/test.cpp b/source/test.cpp
-index c5cbc80..04901ea 100644
+index 04901ea..db94658 100644
 --- a/source/test.cpp
 +++ b/source/test.cpp
-@@ -1,20 +1,11 @@
--TEST(ArgMaxTest, UnsupportedType_NEG) {
--  Tensor input_tensor = makeInputTensor<DataType::FLOAT32>({1, 1, 2, 4}, {
--                                                                             1,
--                                                                             2,
--                                                                             7,
--                                                                             8,
--                                                                             1,
--                                                                             9,
--                                                                             7,
--                                                                             3,
--                                                                         });
--  Tensor dimension_tensor = makeInputTensor<DataType::S32>({}, {3});
--  Tensor output_tensor = makeOutputTensor(DataType::U8);
-+#include <iostream>
- 
--  ArgMaxParams params{};
--  params.output_type = DataType::U8;
--  ArgMax kernel(&input_tensor, &dimension_tensor, &output_tensor, params);
--  kernel.configure();
--  EXPECT_ANY_THROW(kernel.execute());
-+void main() {
-+  int i = 0;
-+  cout << "i: " << i
-+       << "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-+          "aaaaaaaaaaaaaaaaaaaAAAAAA"
-+       << endl;
-+
-+  return;
+@@ -4,8 +4,7 @@ void main() {
+   int i = 0;
+   cout << "i: " << i
+        << "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+-          "aaaaaaaaaaaaaaaaaaaAAAAAA"
++          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        << endl;
+-
+   return;
  }
