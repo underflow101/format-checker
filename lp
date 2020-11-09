@@ -24,7 +24,7 @@ fi
 LP_PROJECT_PATH=$1; shift
 
 if [[ -z "${LP_PROJECT_PATH}" ]]; then
-  echo "Invalid"
+  Usage
   exit 255
 fi
 
